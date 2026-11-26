@@ -1,1 +1,1 @@
-# Projeto-Architectural-Kata
+# Esqueleto com as seções do enunciado
