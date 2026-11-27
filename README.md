@@ -10,10 +10,10 @@
 
 | Nome do Integrante | Função na Sprint 4 (Liderança / Pesquisador / Executor) | GitHub |
 | :--- | :--- | :--- |
-| **Eduardo Paes** (Líder) | Líder & Arquiteto Principal | `@github_user` |
-| **Giovanna Gonçalves** | Pesquisador & Modelagem DDD | `@github_user` |
-| **Nikolas** | Pesquisador & Engenheiro de Resiliência & Integração | `@github_user` |
-| **Nicole Assis** | Executor & Especialista em IA-Native & Autonomia; Executor & QA & Desenvolvedor de Fitness Functions | `@github_user` |
+| **Eduardo Paes** (Líder) | Líder & Arquiteto Principal |
+| **Giovanna Gonçalves** | Pesquisador & Modelagem DDD |
+| **Nikolas** | Pesquisador & Engenheiro de Resiliência & Integração |
+| **Nicole Assis** | Executor & Especialista em IA-Native & Autonomia; Executor & QA & Desenvolvedor de Fitness Functions |
 
 ---
 
