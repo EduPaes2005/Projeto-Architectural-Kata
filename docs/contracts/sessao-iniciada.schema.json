@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://worldofwebcraft.aurora/schemas/sessao-iniciada.v1.schema.json",
+  "title": "SessaoIniciada",
+  "description": "Contrato crítico de evento assíncrono publicado pelo Serviço de Autenticação Centralizado (OHS) para o Realm de destino.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "playerId",
+    "realmId",
+    "timestamp",
+    "sessionToken"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Identificador único do evento (garante idempotência no consumo)."
+    },
+    "playerId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identificador pseudônimo do jogador em conformidade com a LGPD."
+    },
+    "realmId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identificador do Realm/shard de destino da sessão."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Momento de emissão do evento em formato ISO-8601."
+    },
+    "sessionToken": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Token de sessão assinado, válido para autenticação no realm de destino."
+    }
+  }
+}
