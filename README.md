@@ -9,7 +9,7 @@
 ## Identificação da Equipe
 
 | Nome do Integrante | Função na Sprint 4 (Liderança / Pesquisador / Executor) |
-| :--- | :--- | :--- |
+| :--- | :--- |
 | **Eduardo Paes** (Líder) | Líder & Arquiteto Principal |
 | **Giovanna Gonçalves** | Pesquisador & Modelagem DDD |
 | **Nikolas** | Pesquisador & Engenheiro de Resiliência & Integração |
