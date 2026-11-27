@@ -1,0 +1,46 @@
+@startuml C3_Componentes_Motor_AI_Native_World_of_Webcraft
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_WITH_LEGEND()
+
+title World of Webcraft — C4 Nível 3: Motor AI-Native e Autonomia (Contexto Isolado)
+
+Container(chat_local, "Serviço de Chat Local (Realm)", "Go — Bounded Context: Chat", "Processa ~333 msg/s por realm (~33.334 msg/s global no pico) sob Arquitetura Defensiva.")
+ContainerQueue(barramento, "Barramento de Eventos Central", "AMQP / Pub-Sub", "Publica resumos de partida e eventos de auditoria do Agregador Global e Realms.")
+Container(gameplay_fps, "Servidor de Gameplay FPS (Isolado)", "Go (60 Hz) — WebRTC UDP", "PROIBIDO acoplamento síncrono com IA para garantir p95 <= 20 ms e imunidade do tick-rate.")
+
+Container_Boundary(ai_native_ctx, "Motor AI-Native e Autonomia (Contexto Isolado)") {
+
+    Component(ai_gateway, "AI Gateway", "Go em ARM64/Graviton | SLA <= 3 ms", "Fachada e roteador; desacopla provedores de IA; aplica métricas, rate limiting por rota e Circuit Breaker (250 ms).")
+
+    Component(guardrails, "Guardrails (Input & Output)", "Regex / Autômatos / Bloom Filter / JSON Schema | SLA <= 2 ms", "Entrada: sanitização XSS, PII Masking ([DADO_PESSOAL_REMOVIDO]), Bloom Filter (>50k termos O(1)), anti-jailbreak/prompt injection. Saída: JSON Schema estrito e filtragem residual.")
+
+    ComponentDb(banco_vetorial, "Banco Vetorial (Cache Semântico & RAG)", "Redis Stack / Valkey (HNSW) | SLA <= 5 ms", "Armazena embeddings locais (MiniLM-L6-v2 ONNX, 384d < 2 ms). Similaridade cosseno >= 0,93 retorna HIT (absorve 70-85%). LRU + TTL 48h (comuns) / 7d (ofensas).")
+
+    Component(slm_tier1, "SLM, Tier 1", "Modelos 1B-7B quantizados (ex.: Llama-3.2-1B, MiniLM) | SLA <= 40 ms", "Inferência local econômica; atende ~85% das requisições não cacheadas (MISS).")
+
+    Component(llm_tier2, "LLM, Tier 2", "Modelo de grande porte | SLA 200-500 ms (Circuit Breaker 250 ms)", "Acionado apenas em ambiguidade severa (confiança 0,40-0,70), infrações complexas ou disputas de torneio. Fallback heurístico + DLQ.")
+}
+
+' Fluxos síncronos de moderação de chat
+Rel(chat_local, ai_gateway, "Solicitações de chat para IA (Circuit Breaker 250 ms)", "gRPC / HTTPS | Síncrono")
+Rel(ai_gateway, guardrails, "Validar entrada (XSS, PII Masking, Bloom Filter, anti-injection)", "Interno | Síncrono")
+Rel(guardrails, banco_vetorial, "Consultar cache semântico HNSW (cosseno >= 0,93 = HIT)", "Interno | Síncrono")
+Rel(guardrails, slm_tier1, "Roteamento Tier 1 (~85% dos MISS)", "Interno | Síncrono")
+Rel(guardrails, llm_tier2, "Roteamento Tier 2 (confiança 0,40-0,70 ou disputa complexa)", "Interno | Síncrono / Assíncrono")
+Rel(slm_tier1, guardrails, "Retornar classificação para validação JSON Schema e escrita no cache", "Interno | Síncrono")
+Rel(llm_tier2, guardrails, "Retornar análise profunda sob Output Guardrails", "Interno | Síncrono / Assíncrono")
+
+' Fluxo assíncrono de auditoria e RAG
+Rel(barramento, ai_gateway, "Eventos de auditoria e resumos de partida (RAG / governança)", "AMQP / Pub-Sub | Assíncrono")
+
+' Nota explícita de isolamento do Gameplay
+note right of gameplay_fps
+  ISOLAMENTO ESTRITO (ADR 007):
+  Nenhuma chamada síncrona de IA
+  ao loop autoritativo de 60 Hz.
+  O Motor AI-Native pode ser desligado
+  sem interromper gameplay ou autenticação.
+end note
+
+@enduml
