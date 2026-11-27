@@ -1,0 +1,73 @@
+@startuml C2_Conteineres_World_of_Webcraft
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_WITH_LEGEND()
+
+title World of Webcraft — C4 Nível 2: Diagrama de Contêineres (Global vs. Fronteira do Realm)
+
+Person(jogadores, "Jogadores", "Cliente web (JS/TS + WebAssembly pontual). Até 2M simultâneos (20k/realm, limite 30k/realm).")
+
+System_Ext(oauth, "Provedor OAuth", "Validação externa de credenciais (OAuth/SSO).")
+System_Ext(pagamento, "Provedor de Pagamento", "Gateway externo de cobrança e pagamento.")
+
+System_Boundary(global_boundary, "GLOBAL — Serviços Globais & Barramento Centralizado (Fronteira de Implantação)") {
+
+    Container(gateway_global, "Gateway Global", "Go (ARM64/Graviton)", "Ponto único de entrada (Facade): rate limiting justo, autoscaling (4.000 logins/s) e roteamento de solicitações.")
+
+    Container(auth_central, "Serviço de Autenticação Centralizado", "Go — Contexto: Identidade & Conta", "Valida credenciais, emite TokenJWT, concentra dados pessoais (LGPD) e absorve cobrança/pagamento com Circuit Breaker (timeout 1,5s).")
+
+    Container(alocador_global, "Alocador de Salas Global", "Go — Contexto: Gameplay (Global)", "Fixa cada sala privada (realmId + roomId) em um único realm por afinidade (Factory Method), sem loop síncrono.")
+
+    ContainerQueue(barramento, "Barramento de Eventos Central", "Message Broker / Pub-Sub (AMQP)", "Transporte assíncrono exclusivamente de eventos de domínio e resumos (~66,67/s). Proibido trafegar frames de gameplay.")
+
+    Container(agregador_global, "Agregador de Canais Globais", "Go — Contexto: Chat (Global)", "Consolida e unifica mensagens de canais globais via fan-out hierárquico entre os 100 realms.")
+}
+
+System_Boundary(realm_boundary, "REALM — Fronteira do Realm (Shard Local | Limite: 30.000 conexões)") {
+
+    Container(gateway_realm, "Gateway do Realm", "Go — Contexto: Gameplay", "Entrada regional para conexões persistentes dos jogadores no shard.")
+
+    Container(gameplay_fps, "Servidor de Gameplay FPS", "Go (60 Hz) — Contexto: Gameplay", "Loop autoritativo local da partida (80k eventos/s entrada; 720k entregas/s fan-out por realm). Zero chamadas cross-realm.")
+
+    Container(salas_realm, "Serviço de Salas do Realm", "Go — Contexto: Gameplay", "Provisiona e gerencia salas privadas locais por afinidade (800 salas de 10 jogadores por realm).")
+
+    ContainerDb(db_realm, "Banco de Dados do Realm", "SQL (Zero Cross-Realm Access)", "Armazena estado operacional isolado por realmId com identificadores pseudônimos (LGPD).")
+
+    Container(chat_local, "Serviço de Chat Local", "Go — Contexto: Chat", "Gerencia canais locais (realmId + channelId), ~333 msg/s no pico por realm e reconexão idempotente (RTO <= 10s).")
+
+    ContainerDb(db_chat, "Banco de Dados do Chat", "SQL / EBS gp3 (Zero Cross-Realm Access)", "Armazena histórico local de chat com retenção máxima de 90 dias (janela móvel / TTL LGPD).")
+}
+
+' Fluxos síncronos de entrada (Plano de Controle)
+Rel(jogadores, gateway_global, "Solicitar autenticação / sala privada", "HTTPS | Síncrono")
+Rel(gateway_global, auth_central, "Encaminhar validação de conta", "HTTPS / JSON | Síncrono")
+Rel(gateway_global, alocador_global, "Encaminhar pedido de sala privada", "HTTPS / gRPC | Síncrono")
+
+' Integrações externas isoladas por ACL
+Rel(auth_central, oauth, "Validar credenciais (ACL no nosso lado)", "HTTPS / OAuth | Síncrono")
+Rel(auth_central, pagamento, "Processar cobrança da conta (ACL no nosso lado)", "HTTPS / REST | Síncrono")
+
+' Fluxos assíncronos no Barramento Central
+Rel(auth_central, barramento, "Publicar evento de login SessaoIniciada (OHS)", "AMQP | Assíncrono")
+Rel(alocador_global, barramento, "Alocar sala (realmId + roomId) no Realm", "Pub/Sub via Barramento | Assíncrono")
+Rel(barramento, agregador_global, "Consolidar e unificar mensagens de canais globais", "Pub/Sub AMQP | Assíncrono")
+Rel(agregador_global, barramento, "Publicar mensagens globais unificadas", "Pub/Sub AMQP | Assíncrono")
+
+' Fluxos de tempo real no Realm
+Rel(jogadores, gateway_realm, "Conectar persistentemente", "WebSockets / TCP & WebRTC UDP | Síncrono")
+Rel(gateway_realm, gameplay_fps, "Trafegar inputs de comandos FPS", "gRPC / WebSockets (WebRTC UDP) | Síncrono")
+Rel(gateway_realm, chat_local, "Redirecionar tráfego de chat", "WebSockets / TCP | Síncrono")
+
+' Persistência isolada por shard
+Rel(gameplay_fps, db_realm, "Gravar estado operacional", "TCP / SQL | Síncrono")
+Rel(chat_local, db_chat, "Gravar histórico local (TTL 90 dias)", "TCP / SQL | Síncrono")
+
+' Consumo e publicação do Realm no Barramento
+Rel(barramento, gateway_realm, "Consumir SessaoIniciada (via ACL)", "Pub/Sub AMQP | Assíncrono")
+Rel(barramento, salas_realm, "Provisionar sala no shard local", "Pub/Sub AMQP | Assíncrono")
+Rel(salas_realm, barramento, "Publicar SalaCriada e JogadorEntrouNaSala (OHS)", "Pub/Sub AMQP | Assíncrono")
+Rel(gameplay_fps, barramento, "Publicar resumo de partida finalizada (~66,67/s)", "AMQP | Assíncrono")
+Rel(chat_local, barramento, "Enviar mensagens de canais globais", "Pub/Sub AMQP | Assíncrono")
+Rel(barramento, chat_local, "Consumir SessaoIniciada, eventos de sala (ACL) e mensagens globais", "Pub/Sub AMQP | Assíncrono")
+
+@enduml

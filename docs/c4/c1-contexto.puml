@@ -1,0 +1,22 @@
+@startuml C1_Contexto_World_of_Webcraft
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_WITH_LEGEND()
+
+title World of Webcraft — C4 Nível 1: Diagrama de Contexto
+
+Person(jogadores, "Jogadores", "Usuários que acessam o MMORPG inteiramente via navegador web (até 2.000.000 de sessões simultâneas no pico).")
+Person(admin, "Admin", "Administrador responsável por autenticar e gerenciar funções do sistema.")
+
+System(wow, "World of Webcraft", "MMORPG distribuído via navegador web com arquitetura orientada a eventos, sharding em 100 realms, salas privadas autoritativas, chat em tempo real e conformidade LGPD.")
+
+System_Ext(oauth, "Serv. Provedor de Identificação", "Provedor externo de autenticação via OAuth/SSO login.")
+System_Ext(pagamento, "Gateway de Pagamento", "Serviço externo para processamento de transações financeiras com consistência forte.")
+
+Rel(jogadores, wow, "Autenticar, jogar partidas e usar chat", "HTTPS / WebSockets / WebRTC")
+Rel(admin, wow, "Autenticar, gerenciar funções", "HTTPS")
+
+Rel(wow, oauth, "Validar credenciais (isolado via ACL)", "HTTPS / OAuth")
+Rel(wow, pagamento, "Processar transações (isolado via ACL)", "HTTPS / REST")
+
+@enduml
