@@ -1,7 +1,7 @@
 # Projeto Architectural Kata — World of Webcraft
 
 **Disciplina:** Arquitetura de Software | **Período:** 6º Período — Engenharia de Software  
-**Turma:** [Quinta-feira] | **Sprint / Entrega:** Sprint 4 - Final do Projeto por Equipes  
+**Turma:** Quinta-feira | **Sprint / Entrega:** Sprint 4 — Final do Projeto por Equipes  
 **Equipe:** Equipe Aurora | **Professor:** Prof. Sidney | **Data:** 26/11/2026
 
 ---
@@ -28,34 +28,33 @@ A equipe adotou uma **Arquitetura Orientada a Eventos com Sharding por Realm (AD
 
 Sob a perspectiva de modelagem e evolução, os limites do sistema foram formalizados em três Bounded Contexts (**Identidade & Conta**, **Gameplay** e **Chat**) integrados exclusivamente via eventos assíncronos (OHS + Published Language no upstream e Camadas Anti-Corrupção no downstream), sustentados por princípios SOLID e nove padrões GoF aplicados a variações reais. A seleção tecnológica definiu **Go** (ARM64/Graviton em `sa-east-1`) como linguagem principal do back-end após avaliação em matriz ponderada (106 pontos contra 101 do Rust e 76 do Node.js) e análise de TCO.
 
-Para atender à moderação contextual do chat sem violar o orçamento de latência ($p95\text{ RTT} \le 120\text{ ms}$), o TCO ou a LGPD, a solução incorpora um contexto isolado denominado **Motor AI-Native e Autonomia (ADR 007)** sob Arquitetura Defensiva em 6 camadas. Filtros determinísticos (Rate Limiting, PII Masking, Bloom Filter) e um Cache Semântico em Redis Stack/Valkey (índice HNSW, similaridade $\ge 0,93$) absorvem mais de 90% do volume antes que casos ambíguos sejam roteados para inferência em camadas (SLM Tier 1 e LLM Tier 2) protegida por Circuit Breaker (250 ms) e fallback gracioso com DLQ.
+Para atender à moderação contextual do chat sem violar o orçamento de latência (p95 RTT <= 120 ms), o TCO ou a LGPD, a solução incorpora um contexto isolado denominado **Motor AI-Native e Autonomia (ADR 007)** sob Arquitetura Defensiva em 6 camadas. Filtros determinísticos (Rate Limiting, PII Masking, Bloom Filter) e um Cache Semântico em Redis Stack/Valkey (índice HNSW, similaridade >= 0,93) absorvem mais de 90% do volume antes que casos ambíguos sejam roteados para inferência em camadas (SLM Tier 1 e LLM Tier 2) protegida por Circuit Breaker (250 ms) e fallback gracioso com DLQ.
 
 ---
 
 ## 2. Atributos de Qualidade e Matriz QAW
 
+Documentação detalhada de Drivers, Cenários QAW, BOTE e Topologia de Dados em [`./docs/qaw-bote/drivers-qaw-bote-topologia.md`](./docs/qaw-bote/drivers-qaw-bote-topologia.md).
+
 Os seis drivers priorizados no QAW são: **Escalabilidade** (Crítica), **Performance de rede** (Crítica), **Disponibilidade** (Alta), **Modulabilidade** (Alta — subcaracterística de manutenibilidade), **Elasticidade** (Alta) e **Privacidade/LGPD** (Obrigatória).
 
 | Atributo de Qualidade | Cenário Padronizado (Fonte -> Estímulo -> Artefato -> Ambiente -> Resposta) | Medida da Resposta (Métrica Objetivo) |
 | :--- | :--- | :--- |
-| **Escalabilidade** *(Login em massa)* | **Fonte:** Jogadores acessando após lançamento de temporada ou início de torneio. **Estímulo:** 1.200.000 logins em 10 min (2.000 req/s médios, 4.000 req/s de pico de projeto). **Artefato:** Gateway global, serviço central de autenticação/conta e serviço de sessão do realm. **Ambiente:** Pico planejado de 2 milhões de usuários simultâneos em 100 realms. **Resposta:** Gateway aplica rate limiting justo e autoscaling; autenticação valida a conta; evento `SessaoIniciada` é publicado no barramento, sem acesso direto ao banco do shard. | 4.000 logins/s; sucesso $\ge 99,9\%$; $p95 \le 1,5\text{ s}$; nenhum realm acima de 30.000 sessões; fila estabilizada em até 5 min. |
-| **Performance de Rede + Escalabilidade** *(Salas privadas de torneio)* | **Fonte:** Organizadores iniciando rodada; 800.000 jogadores entrando em salas privadas. **Estímulo:** 800.000 entradas em 5 min (2.667 req/s médios, 5.334 req/s de projeto); 10 eventos/s por jogador. **Artefato:** Alocador de salas, gateway do realm e servidor autoritativo da partida. **Ambiente:** 80.000 salas simultâneas de 10 jogadores em 100 realms. **Resposta:** Alocador fixa cada sala em um único realm, escala nós dentro do shard e mantém o loop local; só eventos de domínio e o resumo final seguem pelo barramento. | Sucesso de entrada $\ge 99,9\%$; $p95$ de entrada $\le 2\text{ s}$; $p95$ gateway-servidor de partida $\le 20\text{ ms}$; $p95$ RTT ao usuário $\le 120\text{ ms}$; zero chamadas síncronas cross-realm durante a partida. |
-| **Disponibilidade + Performance de Rede** *(Chat em tempo real sob falha)* | **Fonte:** Falha de infraestrutura em instância de chat ou partição do broker durante o pico. **Estímulo:** Uma instância falha com 500.000 usuários ativos no chat; pico de 33.334 msg/s (~333 msg/s por realm). **Artefato:** Gateway de conexões, serviço de chat do realm, partição do barramento e agregador de canais globais. **Ambiente:** Operação de pico com conexões persistentes e canais locais/globais. **Resposta:** Nó removido do balanceamento; clientes reconectam ao mesmo realm; mensagens confirmadas retomadas de forma idempotente; chat global continua pelo agregador. | $\text{RTO} \le 10\text{ s}$; perda $\le 0,1\%$ e duplicação $\le 0,1\%$; $p95$ de entrega $\le 200\text{ ms}$; disponibilidade mensal $\ge 99,95\%$. |
-
-### Síntese BOTE e Política de Retenção (LGPD)
-- **Carga de Pico:** 2.000.000 de sessões simultâneas (20.000/realm), 80.000 salas (800/realm), 8.000.000 de eventos/s de gameplay (72.000.000 entregas/s) e ~33.334 msg/s de chat.
-- **Armazenamento (5 anos com 3 cópias):** Persistir tudo exigiria ~457,1 PB (inviável). Com a política recomendada — Perfis/contas (2,34 TB durante a relação + eliminação), Resumos de partida por 5 anos (630,72 TB), Chat identificável em janela móvel de 90 dias (116,64 TB) e eventos brutos de gameplay fora do histórico — a capacidade inicial cai para **749,70 TB** (~974,61 TB / 0,98 PB com 30% de folga).
+| **Escalabilidade** *(Login em massa)* | **Fonte:** Jogadores acessando após lançamento de temporada ou início de torneio. **Estímulo:** 1.200.000 logins em 10 min (2.000 req/s médios, 4.000 req/s de pico de projeto). **Artefato:** Gateway global, serviço central de autenticação/conta e serviço de sessão do realm. **Ambiente:** Pico planejado de 2 milhões de usuários simultâneos em 100 realms. **Resposta:** Gateway aplica rate limiting justo e autoscaling; autenticação valida a conta; evento `SessaoIniciada` é publicado no barramento, sem acesso direto ao banco do shard. | 4.000 logins/s; sucesso >= 99,9%; p95 <= 1,5 s; nenhum realm acima de 30.000 sessões; fila estabilizada em até 5 min. |
+| **Performance de Rede + Escalabilidade** *(Salas privadas de torneio)* | **Fonte:** Organizadores iniciando rodada; 800.000 jogadores entrando em salas privadas. **Estímulo:** 800.000 entradas em 5 min (2.667 req/s médios, 5.334 req/s de projeto); 10 eventos/s por jogador. **Artefato:** Alocador de salas, gateway do realm e servidor autoritativo da partida. **Ambiente:** 80.000 salas simultâneas de 10 jogadores em 100 realms. **Resposta:** Alocador fixa cada sala em um único realm, escala nós dentro do shard e mantém o loop local; só eventos de domínio e o resumo final seguem pelo barramento. | Sucesso de entrada >= 99,9%; p95 de entrada <= 2 s; p95 gateway-servidor de partida <= 20 ms; p95 RTT ao usuário <= 120 ms; zero chamadas síncronas cross-realm durante a partida. |
+| **Disponibilidade + Performance de Rede** *(Chat em tempo real sob falha)* | **Fonte:** Falha de infraestrutura em instância de chat ou partição do broker durante o pico. **Estímulo:** Uma instância falha com 500.000 usuários ativos no chat; pico de 33.334 msg/s (~333 msg/s por realm). **Artefato:** Gateway de conexões, serviço de chat do realm, partição do barramento e agregador de canais globais. **Ambiente:** Operação de pico com conexões persistentes e canais locais/globais. **Resposta:** Nó removido do balanceamento; clientes reconectam ao mesmo realm; mensagens confirmadas retomadas de forma idempotente; chat global continua pelo agregador. | RTO <= 10 s; perda <= 0,1% e duplicação <= 0,1%; p95 de entrega <= 200 ms; disponibilidade mensal >= 99,95%. |
 
 ---
 
 ## 3. Visão Geral da Arquitetura (Modelo C4)
 
-A arquitetura está documentada conforme as abstrações do Modelo C4 (Diagrams-as-Code na pasta `./docs/c4/`):
-- 📄 **Nível 1 — Diagrama de Contexto:** `./docs/c4/c1-contexto.puml` *(Jogadores e Admin interagindo via HTTPS/WebSockets com o sistema World of Webcraft, integrado aos provedores externos OAuth/SSO e Gateway de Pagamento).*
-- 📄 **Nível 2 — Diagrama de Contêineres:** `./docs/c4/c2-conteineres.puml` *(Fronteira Global: Gateway Global, Serviço de Autenticação Centralizado, Alocador de Salas Global, Barramento de Eventos Central e Agregador de Canais Globais; Fronteira do Realm — limite de 30.000 conexões: Gateway do Realm, Servidor de Gameplay FPS, Serviço de Salas do Realm, Serviço de Chat Local, Banco de Dados do Realm e Banco de Dados do Chat).*
-- 📄 **Nível 3 — Diagrama de Componentes:** `./docs/c4/c3-componentes-ai-native.puml` *(Bloco isolado "Motor AI-Native e Autonomia" com AI Gateway, Guardrails, Banco Vetorial, SLM Tier 1 e LLM Tier 2)* e Diagrama de Classes em `./docs/c4/diagrama-classes-solid.puml`.
+A arquitetura está documentada conforme as abstrações do Modelo C4 em `./docs/c4/`:
+- 📄 **Nível 1 — Diagrama de Contexto:** [`./docs/c4/c1-contexto.puml`](./docs/c4/c1-contexto.puml)
+- 📄 **Nível 2 — Diagrama de Contêineres:** [`./docs/c4/c2-conteineres.puml`](./docs/c4/c2-conteineres.puml)
+- 📄 **Nível 3 — Diagrama de Componentes (Motor AI-Native):** [`./docs/c4/c3-componentes-ai-native.puml`](./docs/c4/c3-componentes-ai-native.puml) *(PR da Nicole)*
+- 📄 **Diagrama de Classes (SOLID):** [`./docs/c4/diagrama-classes-solid.puml`](./docs/c4/diagrama-classes-solid.puml) *(PR da Giovanna)*
 
-### Visualização e Mapeamento de Protocolos (C4 — Nível 2)
+### Mapeamento de Protocolos e Natureza (C4 — Nível 2)
 
 | Interação | Protocolo | Natureza |
 | :--- | :--- | :--- |
@@ -70,8 +69,6 @@ A arquitetura está documentada conforme as abstrações do Modelo C4 (Diagrams-
 | Publicar resumo de partida finalizada | AMQP | Assíncrono |
 | Enviar mensagens de canais globais | Pub/Sub AMQP | Assíncrono |
 
-*(Inserir aqui a renderização do diagrama C4 Nível 2 gerado a partir de `./docs/c4/c2-conteineres.puml`.)*
-
 ---
 
 ## 4. Domain-Driven Design (DDD) & Limites de Contexto
@@ -79,94 +76,79 @@ A arquitetura está documentada conforme as abstrações do Modelo C4 (Diagrams-
 - Documentação completa em `./docs/ddd/bounded-contexts-mapa-contexto.md` e `./docs/adrs/ADR-005-ddd-bounded-contexts-integracao.md`.
 
 ### 4.1. Classificação dos Subdomínios
-- **Core Domain (Domínio Principal):** **Gameplay** *(distribuído — Alocador de Salas Global, Gateway do Realm, Servidor de Gameplay FPS, Serviço de Salas do Realm e Banco do Realm; efêmero e baseado em ticks).*
-- **Supporting Subdomain (Suporte):** **Chat** *(local por Realm e global — Serviço de Chat Local, Banco de Dados do Chat com retenção de 90 dias/LGPD e Agregador de Canais Globais).*
-- **Generic Subdomain (Genérico / Suporte Global):** **Identidade & Conta** *(global — Serviço de Autenticação Centralizado, que nesta fase absorve cobrança e pagamento; OAuth e Gateway de Pagamento são provedores externos).*
-
-*(Nota: Global e Realm são fronteiras de implantação, não contextos isolados. Um Bounded Context exclusivo para Pagamento — moeda, carteira, loja e evento `CompraConfirmada` — foi formalmente adiado.)*
+- **Core Domain (Domínio Principal):** **Gameplay** *(Alocador de Salas Global, Gateway do Realm, Servidor de Gameplay FPS, Serviço de Salas do Realm e Banco do Realm).*
+- **Supporting Subdomain (Suporte):** **Chat** *(Serviço de Chat Local, Banco de Dados do Chat com retenção de 90 dias/LGPD e Agregador de Canais Globais).*
+- **Generic Subdomain (Genérico / Suporte Global):** **Identidade & Conta** *(Serviço de Autenticação Centralizado, absorvendo temporariamente cobrança e pagamento; OAuth e Gateway de Pagamento são provedores externos).*
 
 ### 4.2. Mapa de Contexto e Camada Anti-Corrupção (ACL)
-A integração entre contextos ocorre exclusivamente por eventos assíncronos (**Open Host Service + Published Language** no upstream) com **Anti-Corruption Layer (ACL)** padronizada no downstream (implementada via padrão Adapter), isolando a Linguagem Ubíqua de cada contexto e bloqueando bancos compartilhados ou chamadas síncronas:
-- **Identidade → Gameplay:** OHS publica `SessaoIniciada`; ACL do Gameplay traduz a sessão em jogador pseudônimo.
-- **Identidade → Chat:** OHS publica `SessaoIniciada`; ACL do Chat converte a sessão em participante de canal.
-- **Gameplay → Chat:** OHS publica `SalaCriada` e `JogadorEntrouNaSala`; ACL do Chat (`ChatSalaObserver`) mapeia sala (`realmId + roomId`) em canal (`realmId + channelId`).
-- **Provedor OAuth → Identidade:** ACL isola o modelo externo de autenticação.
-- **Provedor de Pagamento → Identidade:** ACL protege o modelo interno de conta e cobrança.
+A integração ocorre exclusivamente por eventos assíncronos (**OHS + Published Language** no upstream) com **Anti-Corruption Layer (ACL)** no downstream via padrão Adapter:
+- **Identidade -> Gameplay:** `SessaoIniciada` (OHS) traduzido em jogador pseudônimo (ACL).
+- **Identidade -> Chat:** `SessaoIniciada` (OHS) convertido em participante de canal (ACL).
+- **Gameplay -> Chat:** `SalaCriada` e `JogadorEntrouNaSala` (OHS) mapeados de `realmId + roomId` para `realmId + channelId` (ACL / `ChatSalaObserver`).
+- **Provedor OAuth -> Identidade** e **Provedor de Pagamento -> Identidade:** ACLs protegem o modelo interno.
 
 ---
 
 ## 5. Padrões de Projeto & Princípios SOLID
 
-### 5.1. Princípios SOLID Aplicados e Métricas de Acoplamento
-A modelagem orienta-se em 5 pacotes lógicos (`Plano_Central`, `Processadores_Eventos`, `Abstracoes_Interfaces`, `Eventos_Dominio`, `Shard_Realm`):
-- **Single Responsibility Principle (SRP):** `ContaUsuario` gerencia dados/perfil; `ServicoAutenticacao` valida credenciais e emite `TokenJWT`; a retenção LGPD é isolada em `IPoliticaRetencaoLGPD`.
-- **Open/Closed Principle (OCP):** `IProcessadorEvento` permite adicionar novos eventos (`EventoCompraItem`, `EventoFimTorneio`) ao barramento sem alterá-lo; `AlocadorSalas` permite novos formatos de torneio via subclasses.
-- **Liskov Substitution Principle (LSP):** Todas as derivadas de `EventoDominio` (`EventoSessaoIniciada`, `EventoPartidaFinalizada`, `ResumoPartida`) são processadas uniformemente pelo barramento.
-- **Interface Segregation Principle (ISP):** O servidor de jogo depende apenas de `IProcessadorGameplay`; o chat depende apenas de `IPoliticaRetencaoLGPD`.
-- **Dependency Inversion Principle (DIP):** `SalaTorneio`, `ServicoAutenticacao` e `AgregadorCanaisGlobais` dependem da abstração `IBarramentoEventos` (em `Abstracoes_Interfaces`), e não de um broker concreto.
-- **Diagnóstico de Acoplamento (24/09/2026):** `Plano_Central` ($D=0,00$), `Processadores_Eventos` ($D=0,00$) e `Abstracoes_Interfaces` ($D=0,20$) estão saudáveis; `Shard_Realm` ($D=0,40$) está em zona de atenção (rotear 100% via `IRepositorioRealm`); **`Eventos_Dominio` ($D=0,86$, $A=0,14$, $Ca=8$, $I=0,00$)** está na Zona de Dor — prioridade de refatoração via extração da interface `IEvento` e adoção do padrão Adapter.
+### 5.1. Princípios SOLID Aplicados e Análise de Acoplamento
+Organização em 5 namespaces lógicos (`Plano_Central`, `Processadores_Eventos`, `Abstracoes_Interfaces`, `Eventos_Dominio`, `Shard_Realm`):
+- **SRP:** Separação entre `ContaUsuario`, `ServicoAutenticacao` e `IPoliticaRetencaoLGPD`.
+- **OCP:** Extensão de novos eventos via `IProcessadorEvento` e novos formatos de torneio via subclasses de `AlocadorSalas`.
+- **LSP:** Subclasses de `EventoDominio` processadas uniformemente no barramento.
+- **ISP:** Interfaces segregadas (`IProcessadorGameplay`, `IPoliticaRetencaoLGPD`).
+- **DIP:** Serviços centrais e de realm dependem de `IBarramentoEventos` e `IRepositorioRealm` em `Abstracoes_Interfaces`.
+- **Métricas de Acoplamento (24/09/2026):** `Plano_Central` (D=0,00), `Processadores_Eventos` (D=0,00), `Abstracoes_Interfaces` (D=0,20), `Shard_Realm` (D=0,40 — atenção) e **`Eventos_Dominio` (D=0,86 — Zona de Dor)**, com refatoração planejada via extração de `IEvento` e padrão Adapter.
 
 ### 5.2. Catálogo de Padrões GoF Utilizados (3 Conjuntos)
 
-| Padrão GoF | Categoria | Aplicação na Arquitetura (`./docs/ddd/analise-acoplamento-gof.md`) | Problema de Engenharia Resolvido |
+| Padrão GoF | Categoria | Aplicação na Arquitetura | Problema de Engenharia Resolvido |
 | :--- | :--- | :--- | :--- |
-| **Builder** | Criacional | `RealmBuilder` (criação e configuração dos Realms) | Montagem passo a passo de Realms complexos validando invariantes e evitando configurações espalhadas. |
-| **Adapter** | Estrutural | Consumidores de `Eventos_Dominio` e ACLs de Pagamento/OAuth | Redução de acoplamento lógico nos eventos ($D=0,86$) e tradução de modelos externos/upstream para o domínio local. |
-| **Strategy** | Comportamental | Roteamento do Serviço de Chat (~33 mil msg/s no pico) | Substituição de condicionais por algoritmos intercambiáveis para evoluir chat global e local independentemente. |
-| **Composite** | Estrutural | `EntidadeJogo`, `JogadorLeaf`, `EsquadraoComposite` (`aplicarEfeito()`) | Ações em lote uniformes sobre jogadores, esquadrões e guildas, e distribuição hierárquica de permissões em canais de chat. |
-| **Bridge** | Estrutural | `BarramentoEventosAbstrato` e `ProvedorTransporte` | Desacopla serviços de aplicação dos drivers físicos de rede, permitindo alternar entre gRPC local, WebSocket e AMQP sem alterar regras de domínio. |
-| **Flyweight** | Estrutural | `TipoProjetilFlyweight`, `FabricaProjetil`, `ProjetilEmJogo` | Separa estado intrínseco (modelo 3D, dano base) do extrínseco (posição X, Y) nos picos de 8M eventos/s de projéteis (estimativa >90% de economia de RAM). |
-| **Facade** | Estrutural | Gateway Global (`SolicitarSalaPrivada`) | Ponto único de entrada (Cenário 2 QAW / R1) ocultando validação de sessão, rate limiting e alocação (DIP). |
-| **Factory Method** | Criacional | `AlocadorSalas` (`CriarPartida`) | Admissão de novos formatos de torneio (ex.: eliminatória, pontos corridos) sem modificar o alocador (OCP / R2). |
-| **Observer** | Comportamental | Barramento de Eventos (`ChatSalaObserver`) | Chat assina `SalaCriada` e `JogadorEntrouNaSala` para abrir canais sem acoplamento ao Gameplay (OCP e DIP / R3). |
+| **Builder** | Criacional | `RealmBuilder` | Construção passo a passo de Realms complexos com validação de invariantes. |
+| **Adapter** | Estrutural | Consumidores de `Eventos_Dominio` e ACLs externas | Redução de acoplamento lógico em `Eventos_Dominio` (D=0,86) e isolamento de APIs de pagamento/OAuth. |
+| **Strategy** | Comportamental | Roteamento do Chat (~33 mil msg/s no pico) | Alternância polimórfica entre chat local e global sem condicionais complexas. |
+| **Composite** | Estrutural | `EntidadeJogo`, `JogadorLeaf`, `EsquadraoComposite` | Ações em lote uniformes sobre jogadores, esquadrões e guildas, e permissões hierárquicas de chat. |
+| **Bridge** | Estrutural | `BarramentoEventosAbstrato` e `ProvedorTransporte` | Desacopla serviços de domínio dos drivers de rede (gRPC, WebSocket, AMQP). |
+| **Flyweight** | Estrutural | `TipoProjetilFlyweight`, `FabricaProjetil`, `ProjetilEmJogo` | Separa estado intrínseco do extrínseco nos picos de 8M eventos/s (estimativa >90% de economia de RAM). |
+| **Facade** | Estrutural | Gateway Global (`SolicitarSalaPrivada`) | Ponto único de entrada ocultando validação de sessão, rate limiting e alocação (DIP). |
+| **Factory Method** | Criacional | `AlocadorSalas` (`CriarPartida`) | Instanciação extensível de formatos de torneio (eliminatória, pontos corridos) sem alterar o alocador (OCP). |
+| **Observer** | Comportamental | Barramento de Eventos (`ChatSalaObserver`) | Abertura automática de canais de chat via assinatura de `SalaCriada` sem acoplamento ao Gameplay (OCP/DIP). |
 
 ---
 
 ## 6. Resiliência, Integração e IA-Native
 
-### 6.1. Padrões de Resiliência e Contratos de Dados
-- **Contrato Crítico (`SessaoIniciada` — `./docs/contracts/sessao-iniciada.schema.json`):** Formalizado em JSON Schema com 5 campos obrigatórios (`eventId` UUID para idempotência, `playerId` pseudônimo LGPD, `realmId`, `timestamp` date-time e `sessionToken` assinado).
-- **Circuit Breaker & Retry no Serviço de Autenticação (ADR 004):** Identificado como elo mais fraco no caminho do login. Configurado com **timeout de 1,5 s** (teto p95), **Retry de 2 tentativas** com backoff exponencial (200 ms e 600 ms), **abertura do circuito** após 5 falhas seguidas ou taxa de erro > 50% em 10 s, **Half-open** com 1 requisição de teste a cada 10 s e **Fallback gracioso** (erro amigável para novos logins, mantendo reconexões via cache local para jogadores já autenticados).
-- **Nivelamento de Carga e Failover de Chat (ADRs 003 e 007):** Remoção automática de nós falhos com reconexão idempotente no mesmo realm ($\text{RTO} \le 10\text{ s}$); filas locais AMQP absorvem rajadas no pipeline de moderação com **Dead Letter Queue (DLQ)** para auditoria assíncrona.
+### 6.1. Padrões de Resiliência e Contratos
+- **Contrato `SessaoIniciada`:** JSON Schema estrito com `eventId` (UUID), `playerId` (pseudônimo LGPD), `realmId`, `timestamp` e `sessionToken`.
+- **Circuit Breaker & Retry na Autenticação (ADR 004):** Timeout de 1,5 s, 2 retries com backoff exponencial (200 ms, 600 ms), abertura após 5 falhas seguidas ou erro > 50% em 10 s, Half-open (1 teste a cada 10 s) e fallback gracioso com reconexão em cache local.
+- **Load Leveling e DLQ:** Filas locais AMQP absorvem picos no pipeline de moderação com Dead Letter Queue para auditoria; failover de chat com RTO <= 10 s e reconexão idempotente.
 
-### 6.2. Componente de Inteligência Artificial Generativa (ADR 007)
-- **Arquitetura AI-Native (Motor AI-Native e Autonomia):** Contexto isolado do loop autoritativo de 60 Hz em Go (WebRTC/UDP), estruturado em **Defesa em Profundidade (6 Tiers)** e **Model Tiering**:
-  - **Tier 0 — Ingress Gateway (Realm):** Validação de JSON Schema e Rate Limiting Token Bucket (> 5 req/s descartado com HTTP 429; SLA $\le 1\text{ ms}$).
-  - **Tier 1 — Input Guardrails:** Sanitização XSS, **PII Masking** obrigatório (regex/autômatos substituem CPF, cartões, e-mails e telefones por `[DADO_PESSOAL_REMOVIDO]` antes de vetorizar), **Bloom Filter** (>50.000 termos maliciosos em $O(1)$ < 1 ms) e filtros anti-jailbreak/prompt injection (SLA $\le 2\text{ ms}$).
-  - **Tier 2 — Cache Semântico:** Embeddings locais ultraleves (`MiniLM-L6-v2` quantizado em ONNX, 384 dimensões, < 2 ms) armazenados em **Redis Stack / Valkey** com índice **HNSW** na mesma subnet dos Gateways em Go. Similaridade de cosseno $\ge 0,93$ retorna **HIT** em $\le 5\text{ ms}$ (absorve 70–85% do tráfego; TTL móvel de 48 h para mensagens comuns e 7 dias para ofensas catalogadas).
-  - **Tier 3 — Buffer e Fila Prioritária:** Fila local AMQP desacoplando rajadas (5–15 ms).
-  - **Tier 4 — Inferência Probabilística (Model Tiering):** **SLM Tier 1** (modelos quantizados de 1B–7B como `Llama-3.2-1B`/`MiniLM`, SLA $\le 40\text{ ms}$, atende ~85% dos misses) e **LLM Tier 2** (200–500 ms sob **Circuit Breaker de 250 ms**, acionado apenas para confiança ambígua entre 0,40 e 0,70 ou disputas complexas de torneio; abre se erros/timeouts > 20% em 10 s com fallback heurístico local + DLQ).
-  - **Tier 5 — Output Guardrails e Egress:** Validação anti-alucinação em **JSON Schema estrito** (`status`: `FLAGGED`/`CLEAN`, `confidence_score`: `0.0–1.0`, `violation_category`: enum), filtragem residual, gravação no cache e broadcast (SLA $\le 2\text{ ms}$). Fluxos assíncronos via Barramento Central alimentam o pipeline RAG e auditorias sem concorrer com o chat em tempo real.
+### 6.2. Motor AI-Native e Autonomia (ADR 007)
+- **Defesa em Profundidade (6 Tiers) e Model Tiering:** Isolado do loop de 60 Hz em Go. Combina **Ingress Gateway** (Token Bucket > 5 req/s -> HTTP 429, <= 1 ms), **Input Guardrails** (XSS, PII Masking `[DADO_PESSOAL_REMOVIDO]`, Bloom Filter > 50.000 termos, anti-jailbreak, <= 2 ms), **Cache Semântico** (MiniLM-L6-v2 ONNX 384d + Redis Stack/Valkey HNSW, similaridade >= 0,93 -> HIT <= 5 ms), **Fila AMQP**, **SLM Tier 1** (1B–7B quantizado, <= 40 ms) e **LLM Tier 2** (200–500 ms sob Circuit Breaker de 250 ms com fallback heurístico + DLQ), encerrando em **Output Guardrails** com JSON Schema estrito (`status`, `confidence_score`, `violation_category`).
 
 ---
 
 ## 7. Registros de Decisões Arquiteturais (ADRs)
 
-Todas as decisões estratégicas e seus trade-offs estão registradas em `./docs/adrs/`:
-
-| ADR | Título da Decisão Arquitetural | Status | Data |
+| ADR | Título da Decisão Arquitetural | Status | Arquivo |
 | :--- | :--- | :--- | :--- |
-| **ADR-000** | Estilo Arquitetural Orientado a Eventos com Sharding por Realm | Aceito | Sprint 1–4* |
-| **ADR-001** | Autenticação Centralizada e Isolamento de Bancos de Dados por Shard de Realm | Proposto | Sprint 1–4* |
-| **ADR-002** | Alocação Local de Salas e Processamento Local de Gameplay por Afinidade | Proposto | Sprint 1–4* |
-| **ADR-003** | Gerenciamento de Canais de Chat por Shard Local e Agregação de Canais Globais | Proposto | Sprint 1–4* |
-| **ADR-004** | Protocolos de Comunicação, Contratos de Dados e Táticas de Resiliência Ativa | Proposto | Sprint 2–4* |
-| **ADR-005** | Mapeamento de Contextos (DDD) e Estratégia de Integração entre Bounded Contexts | Proposto | Sprint 3–4* |
-| **ADR-006** | Seleção da Linguagem Principal do Back-end: Go | Proposto | 2026-11-12 |
-| **ADR-007** | Componentes Probabilísticos para Moderação de Chat via Arquitetura Defensiva *(renumerada da antiga 006 da Sprint 4.1)* | Aprovado | 2026-11-20 |
-
-*\*As ADRs 000 a 005 não possuem data individual fixada no documento consolidado (consolidado em 2026-11-26).*
+| **ADR-000** | Estilo Arquitetural Orientado a Eventos com Sharding por Realm | Aceito | [`ADR-000`](./docs/adrs/ADR-000-estilo-arquitetural-sharding-realm.md) |
+| **ADR-001** | Autenticação Centralizada e Isolamento de Bancos de Dados por Shard de Realm | Proposto | [`ADR-001`](./docs/adrs/ADR-001-autenticacao-centralizada-isolamento-shards.md) |
+| **ADR-002** | Alocação Local de Salas e Processamento Local de Gameplay por Afinidade | Proposto | [`ADR-002`](./docs/adrs/ADR-002-alocacao-local-salas-gameplay-afinidade.md) |
+| **ADR-003** | Gerenciamento de Canais de Chat por Shard Local e Agregação de Canais Globais | Proposto | `ADR-003` *(PR do Nikolas)* |
+| **ADR-004** | Protocolos de Comunicação, Contratos de Dados e Táticas de Resiliência Ativa | Proposto | `ADR-004` *(PR do Nikolas)* |
+| **ADR-005** | Mapeamento de Contextos (DDD) e Estratégia de Integração entre Bounded Contexts | Proposto | `ADR-005` *(PR da Giovanna)* |
+| **ADR-006** | Seleção da Linguagem Principal do Back-end: Go *(12/11/2026)* | Proposto | [`ADR-006`](./docs/adrs/ADR-006-selecao-tecnologica-backend-go.md) |
+| **ADR-007** | Componentes Probabilísticos para Moderação de Chat via Arquitetura Defensiva *(20/11/2026)* | Aprovado | `ADR-007` *(PR da Nicole)* |
 
 ---
 
 ## 8. Testes & Fitness Functions (Governança Automatizada)
 
-### 8.1. Execução das Fitness Functions (ArchUnit, CI/CD, Carga e Chaos)
-Para assegurar a aderência contínua às ADRs e à Topologia de Dados, o repositório consolida as seguintes regras automatizadas em `./tests/fitness/`:
-- **Regra Validada 1 — Isolamento Estrito de Shards (ArchUnit / CI — ADRs 000, 001, 005 e 006):** Pacotes de um Realm não importam clientes de banco de dados de outro Realm (meta: zero conexões cross-shard); acesso direto a bancos de outros Bounded Contexts e chamadas síncronas entre contextos são bloqueados na esteira.
-- **Regra Validada 2 — Imunidade do Loop de Gameplay (CI — ADR 002):** O build falha automaticamente caso haja tentativa de publicação de frames de movimento/disparo no Barramento de Eventos Central; monitoramento contínuo bloqueia chamadas cross-realm e alerta se $p95 > 20\text{ ms}$.
-- **Regra Validada 3 — Contratos de Domínio (Contract Tests — ADR 005):** Testes automatizados validam compatibilidade entre produtores OHS e consumidores ACL antes do consumo, exigindo schemas versionados.
-- **Regra Validada 4 — Performance e Capacidade em Go (Testes de Carga — ADRs 001 e 006):** Validação contínua de 4.000 logins/s (sucesso $\ge 99,9\%$, $p95 \le 1,5\text{ s}$) e carga de 8.000 jogadores por realm ($p95 \le 20\text{ ms}$ gateway-partida, $p95\text{ RTT} \le 120\text{ ms}$, piso de 5.000 pacotes/s por vCPU e monitoramento de pausas de GC).
-- **Regra Validada 5 — Privacidade LGPD e Retenção (Auditorias Diárias — ADRs 003 e 007):** Scripts diários verificam 100% de exclusão no TTL de 90 dias do chat; teste diário com 1.000 payloads sintéticos (CPFs, cartões, e-mails) exige 100% de anonimização no PII Masking (qualquer falha interrompe a esteira).
-- **Regra Validada 6 — Resiliência, Cache Semântico e Chaos Engineering (ADRs 003 e 007):** Injeção de falhas no chat ($\text{RTO} \le 10\text{ s}$, $p95 \le 200\text{ ms}$) e indisponibilidade total do provedor de IA (abertura do Circuit Breaker em $< 10\text{ s}$ sem queda de throughput); monitoramento Prometheus de hit ratio $\ge 70\%$ no cache semântico (alerta severidade 1 se $< 60\%$ por $> 15\text{ min}$); teste de latência de cauda no CI com 15.000 mensagens simultâneas ($p95 \le 40\text{ ms}$ cacheadas e $p99 \le 300\text{ ms}$ sob fallback).
-- **Regra Validada 7 — Licenciamento, Segurança e TCO (CI — ADR 006):** Auditoria automatizada permitindo apenas bibliotecas MIT, Apache 2.0 ou BSD (bloqueando GPL/AGPL e SSPL/BSL), varredura contínua de CVEs e alertas de orçamento de egresso de rede.
+- **Isolamento Cross-Shard (ArchUnit / CI):** Zero conexões ou importações de clientes de banco entre realms (ADRs 000, 001, 005 e 006).
+- **Imunidade do Loop de Gameplay (CI):** Falha de build se houver publicação de frames no barramento central (ADR 002).
+- **Contract Tests (CI):** Validação entre produtores OHS e consumidores ACL com schemas versionados (ADR 005).
+- **Carga e Performance em Go:** 4.000 logins/s (p95 <= 1,5 s); 8.000 jogadores/realm (p95 <= 20 ms, RTT p95 <= 120 ms, >= 5.000 pacotes/s/vCPU) (ADRs 001 e 006).
+- **Privacidade LGPD (Diário):** Verificação de 100% de exclusão no TTL de 90 dias do chat e 100% de anonimização em 1.000 payloads sintéticos de PII (ADRs 003 e 007).
+- **Chaos & Cache Semântico:** Hit ratio >= 70% (alerta sev. 1 < 60% por 15 min), p95 <= 40 ms cacheadas / p99 <= 300 ms fallback (15.000 msg simultâneas), abertura de Circuit Breaker < 10 s e failover de chat com RTO <= 10 s (ADRs 003 e 007).
+- **Licenciamento e TCO (CI):** Apenas MIT, Apache 2.0 ou BSD; monitoramento de CVEs e alertas de orçamento de egresso de rede (ADR 006).
